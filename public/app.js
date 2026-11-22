@@ -30,6 +30,11 @@
     mute: '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>',
     bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
     x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+    music: '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+    play: '<polygon points="5 3 19 12 5 21 5 3"/>',
+    pause: '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>',
+    gift: '<polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/>',
+    award: '<circle cx="12" cy="8" r="7"/><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"/>',
   };
 
   const state = {
@@ -332,25 +337,81 @@
       const reload = () => { sh.close(); openProfile(uid); refreshCounts(); };
       const go = (fn, okMsg) => async () => { try { await fn(); if (okMsg) toast(okMsg); reload(); } catch (e) { toast(e.message, true); } };
       const actions = h('div', { class: 'pf-btns' });
+      actions.append(h('button', { class: 'btn' + (u.following ? ' primary' : ''), type: 'button', onclick: go(() => api('/api/users/' + uid + '/follow', { method: 'POST' }), u.following ? 'Подписка отменена' : 'Подписка оформлена') }, u.following ? '✓ Подписан(а)' : 'Подписаться'));
+      actions.append(h('button', { class: 'btn small', type: 'button', onclick: async () => {
+        if (!confirm('Заблокировать пользователя? Он исчезнет из твоей ленты.')) return;
+        try { await api('/api/users/' + uid + '/block', { method: 'POST' }); sh.close(); toast('Пользователь заблокирован'); } catch (e) { toast(e.message, true); }
+      } }, 'Заблокировать'));
+      actions.append(h('button', { class: 'btn small ghost', type: 'button', onclick: async () => {
+        const reason = prompt('Причина жалобы');
+        if (!reason) return;
+        try { await api('/api/reports', { method: 'POST', body: { targetType: 'user', targetId: uid, reason } }); toast('Жалоба отправлена'); } catch (e) { toast(e.message, true); }
+      } }, 'Пожаловаться'));
       if (u.relation === 'none') actions.append(h('button', { class: 'btn primary', type: 'button', onclick: go(() => api('/api/friends/request', { method: 'POST', body: { userId: uid } }), 'Заявка отправлена') }, 'Добавить в друзья'));
       else if (u.relation === 'outgoing') actions.append(h('button', { class: 'btn', type: 'button', disabled: true }, 'Заявка отправлена'));
       else if (u.relation === 'incoming') actions.append(h('button', { class: 'btn primary', type: 'button', onclick: go(() => api('/api/friends/respond', { method: 'POST', body: { userId: uid, accept: true } }), 'Теперь вы друзья') }, 'Принять заявку'));
-      else if (u.relation === 'friend') actions.append(h('a', { class: 'btn primary', href: '#/chats/' + uid, onclick: () => sh.close() }, 'Написать'));
+      else if (u.relation === 'friend') actions.append(
+        h('a', { class: 'btn primary', href: '#/chats/' + uid, onclick: () => sh.close() }, 'Написать'),
+        h('button', { class: 'btn small', type: 'button', onclick: () => openGiftDialog(uid, sh) }, '🎁 Подарить'));
       const us = u.user;
       const status = us.online ? h('div', { class: 'presence online' }, '● в сети') : us.lastSeen ? h('div', { class: 'presence' }, 'был(а) в сети ' + fmtSeen(us.lastSeen)) : null;
+      // Подарки пользователя
+      let giftsEl = null;
+      try {
+        const gd = await api('/api/users/' + uid + '/gifts');
+        if (gd.gifts && gd.gifts.length) {
+          giftsEl = h('div', { class: 'gifts-row' },
+            h('div', { class: 'hint', style: { marginBottom: '6px' } }, '🎁 Подарки:'),
+            h('div', { class: 'gifts-icons' }, gd.gifts.map(g => h('span', { class: 'gift-icon', title: g.name + (g.message ? ': ' + g.message : '') }, g.icon))));
+        }
+      } catch (_) {}
+      // Уровень пользователя
+      let levelEl = null;
+      try {
+        const lv = await api('/api/level/' + uid);
+        levelEl = h('div', { class: 'level-badge' },
+          h('span', { class: 'level-rank' }, lv.rankTitle),
+          h('span', { class: 'hint' }, ' · Уровень ' + lv.level));
+      } catch (_) {}
       body.replaceChildren(
         h('div', { class: 'pf-head' },
           avatar(us, 84),
           h('div', { class: 'pf-name' }, us.name),
           h('div', { class: 'time' }, '@' + us.username),
+          levelEl,
           status,
           us.bio ? h('div', { class: 'pf-bio' }, rich(us.bio)) : null,
           h('div', { class: 'pf-stats' }, stat(pr.count, 'постов'), stat(pr.likes, 'лайков'), stat(pr.friends, 'друзей')),
-          actions),
+          actions,
+          giftsEl),
         pr.posts.length ? postGrid(pr.posts) : h('div', { class: 'empty' }, 'Постов пока нет'));
     } catch (e) {
       body.replaceChildren(h('div', { class: 'empty' }, e.message));
     }
+  }
+
+  /* ---------------- диалог подарков ---------------- */
+  async function openGiftDialog(toUserId, parentSheet) {
+    const body = h('div', {}, h('div', { class: 'empty' }, 'Загрузка...'));
+    const sh = openSheet('🎁 Выбери подарок', body);
+    try {
+      const d = await api('/api/gifts');
+      const msgI = h('input', { type: 'text', placeholder: 'Пожелание (необязательно)', maxlength: '100' });
+      const anonI = h('input', { type: 'checkbox' });
+      const anonL = h('label', { class: 'check-row' }, anonI, 'Подарить анонимно');
+      const err = h('div', { class: 'form-error' });
+      const grid = h('div', { class: 'gifts-grid' },
+        d.gifts.map(g => h('button', { class: 'gift-card', type: 'button', onclick: async () => {
+          err.textContent = '';
+          try {
+            await api('/api/gifts/send', { method: 'POST', body: { toUserId, giftId: g.id, message: msgI.value, anonymous: anonI.checked } });
+            toast(g.icon + ' Подарок отправлен!');
+            sh.close();
+            if (parentSheet) { parentSheet.close(); openProfile(toUserId); }
+          } catch (e) { err.textContent = e.message; }
+        } }, h('div', { class: 'gift-emoji' }, g.icon), h('div', { class: 'gift-label' }, g.name))));
+      body.replaceChildren(grid, h('div', { class: 'field', style: { marginTop: '12px' } }, msgI), anonL, err);
+    } catch (e) { body.replaceChildren(h('div', { class: 'empty' }, e.message)); }
   }
 
   /* ================================================================== */
@@ -523,7 +584,15 @@
   function buildShell() {
     if (shell && shell.root.isConnected) return;
     const host = h('div', { class: 'main' });
-    const items = [['feed', 'Лента', 'home'], ['chats', 'Чаты', 'chat'], ['friends', 'Друзья', 'users'], ['grades', 'Оценки', 'book'], ['activity', 'Активность', 'bell'], ['profile', 'Профиль', 'user']];
+    const items = [
+      ['feed', 'Лента', 'home'],
+      ['chats', 'Чаты', 'chat'],
+      ['music', 'Музыка', 'music'],
+      ['friends', 'Друзья', 'users'],
+      ['grades', 'Оценки', 'book'],
+      ['activity', 'Активность', 'bell'],
+      ['profile', 'Профиль', 'user']
+    ];
     const links = {};
     const badges = {};
     const nav = h('nav', { class: 'nav' },
@@ -580,11 +649,13 @@
         view = viewChats(id);
         break;
       }
+      case 'music': view = viewMusic(); break;
       case 'friends': view = viewFriends(); break;
       case 'grades': view = viewGrades(); break;
       case 'activity': view = viewActivity(); break;
       case 'profile': view = viewProfile(); break;
       case 'theme': view = viewTheme(); break;
+      case 'admin': view = viewAdmin(); break;
       default: location.replace('#/feed'); return;
     }
     mount(view);
@@ -751,12 +822,16 @@
     const tabFr = h('button', { type: 'button', class: 'ft' + (scope === 'friends' ? ' active' : ''), onclick: () => setScope('friends') }, 'Друзья');
     const tabs = h('div', { class: 'feed-tabs', role: 'tablist' }, tabAll, tabFr);
     const searchBtn = h('button', { class: 'fab fab-left', type: 'button', 'aria-label': 'Поиск', onclick: () => openSearch() }, icon('search'));
-    const el = h('div', { class: 'feed-wrap' }, feedEl, tabs, searchBtn, fab);
+    const storiesContainer = h('div');
+    const el = h('div', { class: 'feed-wrap' }, storiesContainer, feedEl, tabs, searchBtn, fab);
     const posts = [];
     let cursor = 0;
     let loading = false;
     let destroyed = false;
     let gen = 0;
+
+    // Загружаем истории
+    buildStoriesBar().then(bar => { if (bar && !destroyed) storiesContainer.replaceChildren(bar); });
 
     // Подгружаем видео только рядом с экраном и выгружаем далёкие — экономим память и трафик.
     const nearObs = new IntersectionObserver((entries) => {
@@ -876,6 +951,13 @@
         } catch (e) { toast(e.message, true); }
       });
       rail.append(saveBtn);
+      const repostBtn = h('button', { type: 'button', 'aria-label': 'Репост', onclick: async () => {
+        const caption = prompt('Добавить комментарий к репосту (необязательно)', '');
+        if (caption === null) return;
+        try { await api('/api/posts/' + p.id + '/repost', { method: 'POST', body: { caption } }); toast('Пост опубликован у тебя в профиле'); }
+        catch (e) { toast(e.message, true); }
+      } }, '↻');
+      rail.append(repostBtn);
       if (p.user.id === state.me.id) {
         rail.append(h('button', { type: 'button', 'aria-label': 'Изменить подпись', onclick: async () => {
           const t = prompt('Подпись к посту', p.caption || '');
@@ -1420,6 +1502,171 @@
   }
 
   /* ================================================================== */
+  /* Экран: МУЗЫКА                                                      */
+  /* ================================================================== */
+
+  function viewMusic() {
+    const page = h('div', { class: 'page' });
+    const list = h('div', { class: 'music-list' });
+    const searchI = h('input', { type: 'text', placeholder: 'Поиск треков...', maxlength: '40' });
+    let tab = 'all';
+    const tabAll = h('button', { type: 'button', class: 'ft active', onclick: () => setTab('all') }, 'Все треки');
+    const tabMy = h('button', { type: 'button', class: 'ft', onclick: () => setTab('my') }, 'Мои');
+    const tabs = h('div', { class: 'feed-tabs', style: { position: 'static', padding: '0 0 10px' } }, tabAll, tabMy);
+    let nowPlaying = null;
+    let audioEl = null;
+
+    function setTab(t) {
+      tab = t;
+      tabAll.classList.toggle('active', t === 'all');
+      tabMy.classList.toggle('active', t === 'my');
+      load();
+    }
+
+    function renderTrack(t) {
+      const isPlaying = nowPlaying === t.id;
+      const playBtn = h('button', { class: 'btn small' + (isPlaying ? ' primary' : ''), type: 'button', onclick: () => togglePlay(t) },
+        icon(isPlaying ? 'pause' : 'play'), isPlaying ? ' Стоп' : ' Плей');
+      const likeBtn = h('button', { class: 'btn small' + (t.liked ? ' liked-btn' : ''), type: 'button', onclick: async () => {
+        try { await api('/api/music/tracks/' + t.id + '/like', { method: 'POST' }); load(); } catch (e) { toast(e.message, true); }
+      } }, t.liked ? '❤️ ' + t.likesCount : '♡ ' + t.likesCount);
+      const scBadge = t.isSoundCloud ? h('span', { class: 'chip', style: { fontSize: '11px', padding: '2px 8px' } }, '☁ SoundCloud') : null;
+      return h('div', { class: 'row music-row' },
+        h('div', { class: 'av', style: { background: 'var(--accent)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '10px', width: '48px', height: '48px', fontSize: '22px', flexShrink: '0' } }, '🎵'),
+        h('div', { style: { flex: '1', minWidth: '0' } },
+          h('div', { style: { fontWeight: '700', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, t.title),
+          h('div', { class: 'hint' }, t.artist + (t.genre ? ' · ' + t.genre : '')),
+          h('div', { class: 'hint' }, '▶ ' + t.listens + ' · ' + (t.user ? t.user.name : '')),
+          scBadge),
+        h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center', flexShrink: '0' } }, playBtn, likeBtn));
+    }
+
+    function togglePlay(t) {
+      if (nowPlaying === t.id) {
+        if (audioEl) { audioEl.pause(); audioEl = null; }
+        nowPlaying = null;
+        load(); return;
+      }
+      if (audioEl) { audioEl.pause(); audioEl = null; }
+      if (t.isSoundCloud) {
+        nowPlaying = t.id;
+        list.querySelectorAll('.sc-embed').forEach(e => e.remove());
+        const iframe = h('iframe', { class: 'sc-embed', style: { width: '100%', height: '166px', border: '0', borderRadius: '12px', marginBottom: '10px' }, src: t.embedUrl, allow: 'autoplay' });
+        list.prepend(iframe);
+        // Увеличиваем прослушивания
+        api('/api/music/tracks/' + t.id + '/listen', { method: 'POST' }).catch(() => {});
+        load(); return;
+      }
+      if (!t.audioUrl) { toast('Аудиофайл не указан', true); return; }
+      audioEl = new Audio(t.audioUrl);
+      audioEl.play().catch(() => toast('Не удалось воспроизвести', true));
+      audioEl.onended = () => { nowPlaying = null; audioEl = null; load(); };
+      nowPlaying = t.id;
+      api('/api/music/tracks/' + t.id + '/listen', { method: 'POST' }).catch(() => {});
+      load();
+    }
+
+    async function load() {
+      try {
+        const q = searchI.value.trim();
+        const url = tab === 'my' ? '/api/music/my' : '/api/music/tracks' + (q ? '?q=' + encodeURIComponent(q) : '');
+        const d = await api(url);
+        const iframes = list.querySelectorAll('.sc-embed');
+        list.replaceChildren(...iframes, ...(d.tracks.length ? d.tracks.map(renderTrack) : [h('div', { class: 'empty' }, 'Треков пока нет')]));
+      } catch (e) { list.replaceChildren(h('div', { class: 'empty' }, e.message)); }
+    }
+
+    let searchTimer = null;
+    searchI.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(load, 300); });
+
+    // Кнопка добавления трека через SoundCloud
+    const addScBtn = h('button', { class: 'btn primary block', type: 'button', style: { marginTop: '12px' }, onclick: openAddSoundCloud }, '☁ Добавить трек из SoundCloud');
+
+    function openAddSoundCloud() {
+      const urlI = h('input', { type: 'url', placeholder: 'https://soundcloud.com/artist/track' });
+      const titleI = h('input', { type: 'text', placeholder: 'Название трека', maxlength: '80' });
+      const artistI = h('input', { type: 'text', placeholder: 'Исполнитель', maxlength: '60' });
+      const err = h('div', { class: 'form-error' });
+      const body = h('div', {},
+        h('div', { class: 'field' }, h('label', {}, 'Ссылка SoundCloud'), urlI),
+        h('div', { class: 'field' }, h('label', {}, 'Название'), titleI),
+        h('div', { class: 'field' }, h('label', {}, 'Исполнитель'), artistI),
+        err,
+        h('button', { class: 'btn primary block', type: 'button', onclick: async () => {
+          err.textContent = '';
+          try {
+            await api('/api/music/soundcloud', { method: 'POST', body: { url: urlI.value, title: titleI.value, artist: artistI.value } });
+            toast('Трек добавлен!');
+            sh.close();
+            load();
+          } catch (e) { err.textContent = e.message; }
+        } }, 'Добавить'));
+      const sh = openSheet('Добавить трек', body);
+    }
+
+    page.append(
+      h('h2', { style: { margin: '0 0 12px' } }, '🎵 Музыка'),
+      tabs,
+      h('div', { class: 'field', style: { marginBottom: '10px' } }, searchI),
+      list,
+      addScBtn);
+    const el = h('div', { class: 'page-wrap' }, page);
+    load();
+    return {
+      el,
+      destroy() { if (audioEl) { audioEl.pause(); audioEl = null; } },
+    };
+  }
+
+  /* ================================================================== */
+  /* Блок историй (Stories) для ленты                                  */
+  /* ================================================================== */
+
+  async function buildStoriesBar() {
+    const bar = h('div', { class: 'stories-bar' });
+    try {
+      const d = await api('/api/stories');
+      if (!d.stories || !d.stories.length) return null;
+      for (const sg of d.stories) {
+        const u = sg.user;
+        const hasUnviewed = sg.items.some(i => !i.viewed);
+        const btn = h('button', { class: 'story-av' + (hasUnviewed ? ' unviewed' : ''), type: 'button', onclick: () => openStoryViewer(sg) },
+          avatar(u, 56), h('div', { class: 'story-name' }, u.name.split(' ')[0]));
+        bar.append(btn);
+      }
+    } catch (_) { return null; }
+    return bar;
+  }
+
+  function openStoryViewer(sg) {
+    let idx = 0;
+    const overlay = h('div', { class: 'story-overlay' });
+    function show() {
+      const item = sg.items[idx];
+      if (!item) { overlay.remove(); return; }
+      const media = item.kind === 'video'
+        ? h('video', { class: 'story-media', src: item.mediaUrl, autoplay: true, playsinline: '', onclick: (e) => e.stopPropagation() })
+        : h('img', { class: 'story-media', src: item.mediaUrl });
+      const caption = item.caption ? h('div', { class: 'story-caption' }, item.caption) : null;
+      const header = h('div', { class: 'story-header' },
+        avatar(sg.user, 36),
+        h('div', {}, h('b', {}, sg.user.name), h('div', { class: 'hint' }, fmtTime(item.createdAt))),
+        h('button', { class: 'btn small', type: 'button', onclick: () => overlay.remove() }, '✕'));
+      const progress = h('div', { class: 'story-progress' },
+        sg.items.map((_, i) => h('div', { class: 'story-dot' + (i === idx ? ' active' : i < idx ? ' seen' : '') })));
+      overlay.replaceChildren(progress, header, media, caption,
+        h('div', { class: 'story-nav' },
+          h('div', { class: 'story-nav-left', onclick: () => { if (idx > 0) { idx--; show(); } } }),
+          h('div', { class: 'story-nav-right', onclick: () => { idx++; show(); } })));
+      // Отмечаем просмотр
+      api('/api/stories/' + item.id + '/view', { method: 'POST' }).catch(() => {});
+    }
+    overlay.addEventListener('click', () => { idx++; show(); });
+    document.body.append(overlay);
+    show();
+  }
+
+  /* ================================================================== */
   /* Экран: АКТИВНОСТЬ (лайки, комментарии, заявки)                     */
   /* ================================================================== */
 
@@ -1953,6 +2200,54 @@
     if (current && current.onInstallable) current.onInstallable();
   });
 
+  function viewAdmin() {
+    const page = h('div', { class: 'page' });
+    const el = h('div', { class: 'view' }, page);
+    const content = h('div', {}, h('div', { class: 'empty' }, 'Загрузка админ-панели…'));
+    const back = h('a', { class: 'btn', href: '#/profile' }, '← В профиль');
+
+    async function load() {
+      try {
+        if (!state.me || !state.me.isAdmin) throw new Error('Доступ запрещён');
+        const [stats, users, reports] = await Promise.all([
+          api('/api/admin/stats'),
+          api('/api/admin/users'),
+          api('/api/admin/reports'),
+        ]);
+        const statGrid = h('div', { class: 'pf-stats' },
+          h('div', { class: 'pf-stat' }, h('b', {}, fmtCount(stats.usersCount)), h('span', {}, 'пользователей')),
+          h('div', { class: 'pf-stat' }, h('b', {}, fmtCount(stats.postsCount)), h('span', {}, 'постов')),
+          h('div', { class: 'pf-stat' }, h('b', {}, fmtCount(stats.onlineCount)), h('span', {}, 'онлайн')));
+        const usersBox = h('div', { class: 'card' }, h('h3', {}, 'Пользователи'));
+        users.users.forEach((u) => {
+          const row = h('div', { class: 'row' },
+            avatar(u, 38),
+            h('div', { class: 'meta' }, h('div', { class: 'title' }, u.name), h('div', { class: 'sub' }, '@' + u.username + (u.online ? ' · онлайн' : ''))),
+            h('button', { class: 'btn small ' + (u.banned ? 'primary' : 'danger'), type: 'button', onclick: async () => {
+              try { await api('/api/admin/users/' + u.id + '/ban', { method: 'POST' }); toast(u.banned ? 'Пользователь разблокирован' : 'Пользователь заблокирован'); load(); }
+              catch (e) { toast(e.message, true); }
+            } }, u.banned ? 'Разблокировать' : 'Заблокировать'));
+          usersBox.append(row);
+        });
+        const reportsBox = h('div', { class: 'card' }, h('h3', {}, 'Жалобы (' + reports.reports.length + ')'));
+        if (!reports.reports.length) reportsBox.append(h('div', { class: 'empty' }, 'Открытых жалоб нет'));
+        reports.reports.forEach((r) => {
+          const row = h('div', { class: 'row' },
+            h('div', { class: 'meta' }, h('div', { class: 'title' }, r.targetType === 'user' ? 'Жалоба на пользователя #' + r.targetId : 'Жалоба на пост #' + r.targetId), h('div', { class: 'sub' }, r.reason)),
+            h('button', { class: 'btn small primary', type: 'button', onclick: async () => {
+              try { await api('/api/admin/reports/' + r.id, { method: 'POST', body: { status: 'resolved' } }); toast('Жалоба закрыта'); load(); }
+              catch (e) { toast(e.message, true); }
+            } }, 'Закрыть'));
+          reportsBox.append(row);
+        });
+        content.replaceChildren(h('div', { class: 'card' }, h('h2', {}, 'Админ-панель'), statGrid, h('div', { class: 'hint' }, 'Панель доступна с любого устройства через защищённый вход.')), reportsBox, usersBox);
+      } catch (e) { content.replaceChildren(h('div', { class: 'empty' }, e.message)); }
+    }
+    page.append(h('div', { class: 'pf-btns' }, back), content);
+    load();
+    return { el };
+  }
+
   function viewProfile() {
     const page = h('div', { class: 'page' });
     const el = h('div', { class: 'view' }, page);
@@ -2096,10 +2391,17 @@
           : h('div', { class: 'empty' }, t === 'posts' ? 'Ты ещё ничего не публиковал. Нажми «+» в ленте.' : 'Здесь пока ничего нет. Сохраняй посты кнопкой-закладкой.'));
       } catch (e) { if (tab === t) content.replaceChildren(h('div', { class: 'empty' }, e.message)); }
     }
+    const adminClaimI = h('input', { type: 'password', placeholder: 'Секрет администратора', autocomplete: 'off' });
+    const adminClaim = state.me.isAdmin ? null : h('form', { class: 'card', onsubmit: async (e) => {
+      e.preventDefault();
+      try { await api('/api/admin/claim', { method: 'POST', body: { password: adminClaimI.value } }); state.me.isAdmin = true; toast('Права администратора активированы'); route(); }
+      catch (ex) { toast(ex.message, true); }
+    } }, h('h3', {}, 'Доступ администратора'), h('div', { class: 'hint' }, 'Для активации нужен только пароль администратора.'), h('div', { class: 'field' }, adminClaimI), h('button', { class: 'btn primary block', type: 'submit' }, 'Активировать админ-доступ'));
+    const adminBtn = state.me.isAdmin ? h('a', { class: 'btn primary block', href: '#/admin' }, '🛡️ Открыть админ-панель') : null;
     function setTab(t) {
       tab = t;
       for (const k of Object.keys(tabBtns)) tabBtns[k].classList.toggle('active', k === t);
-      if (t === 'settings') content.replaceChildren(photoRow, form, installCard, pwForm, logoutBtn);
+      if (t === 'settings') content.replaceChildren(photoRow, form, installCard, pwForm, adminClaim, adminBtn, logoutBtn);
       else loadGrid(t);
     }
 
