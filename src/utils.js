@@ -2,12 +2,18 @@
 
 const crypto = require('crypto');
 
-const TRUST_PROXY = process.env.TRUST_PROXY === '1';
+// Автоматически доверяем reverse-proxy на Render.com, Cloudflare и при явном флаге
+const TRUST_PROXY =
+  process.env.TRUST_PROXY === '1' ||
+  process.env.TRUST_PROXY === 'true' ||
+  Boolean(process.env.RENDER) ||
+  process.env.NODE_ENV === 'production';
 
 class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, details = null) {
     super(message);
     this.status = status;
+    if (details) this.details = details;
   }
 }
 const bad = (m) => new HttpError(400, m);
@@ -20,10 +26,10 @@ function text(v, { min = 0, max, label, multi = false }) {
   let s = multi
     ? v.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
     : v.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/ {2,}/g, ' ');
-  s = s.trim();
+  s = s.trim().normalize('NFC');
   const len = [...s].length;
   if (len < min) throw bad(min === 1 ? `${label}: не может быть пустым` : `${label}: минимум ${min} символов`);
-  if (len > max) throw bad(`${label}: максимум ${max} символов`);
+  if (max !== undefined && len > max) throw bad(`${label}: максимум ${max} символов`);
   return s;
 }
 
@@ -33,29 +39,63 @@ function intParam(v) {
   return n;
 }
 
+function cleanIp(ip) {
+  if (typeof ip !== 'string') return 'unknown';
+  ip = ip.trim();
+  if (ip.startsWith('::ffff:')) return ip.slice(7);
+  return ip;
+}
+
 function clientIp(req) {
-  if (TRUST_PROXY) {
+  if (TRUST_PROXY && req.headers) {
+    const cf = req.headers['cf-connecting-ip'];
+    if (cf && typeof cf === 'string') return cleanIp(cf);
+    const xr = req.headers['x-real-ip'];
+    if (xr && typeof xr === 'string') return cleanIp(xr);
     const xf = req.headers['x-forwarded-for'];
-    if (xf) return String(xf).split(',')[0].trim();
+    if (xf && typeof xf === 'string') {
+      const first = xf.split(',')[0].trim();
+      if (first) return cleanIp(first);
+    }
   }
-  return req.socket.remoteAddress || 'unknown';
+  const raw = req.socket && req.socket.remoteAddress;
+  return raw ? cleanIp(raw) : 'unknown';
 }
 
 const hits = new Map();
+const MAX_RATE_LIMIT_KEYS = 10000;
+
+function cleanupRateLimit(now = Date.now()) {
+  for (const [k, e] of hits) {
+    if (e.reset < now) hits.delete(k);
+  }
+}
+
 function rateLimit(key, max, windowMs) {
   const now = Date.now();
   let e = hits.get(key);
   if (!e || e.reset < now) {
+    if (hits.size >= MAX_RATE_LIMIT_KEYS) {
+      cleanupRateLimit(now);
+      if (hits.size >= MAX_RATE_LIMIT_KEYS) {
+        const oldestKey = hits.keys().next().value;
+        if (oldestKey) hits.delete(oldestKey);
+      }
+    }
     e = { n: 0, reset: now + windowMs };
     hits.set(key, e);
   }
   e.n++;
-  if (e.n > max) throw new HttpError(429, 'Слишком много попыток. Подождите несколько минут и попробуйте снова.');
+  if (e.n > max) {
+    const retrySec = Math.max(1, Math.ceil((e.reset - now) / 1000));
+    const err = new HttpError(429, 'Слишком много попыток. Подождите несколько минут и попробуйте снова.');
+    err.retryAfter = retrySec;
+    throw err;
+  }
 }
 
 setInterval(() => {
-  const now = Date.now();
-  for (const [k, e] of hits) if (e.reset < now) hits.delete(k);
+  cleanupRateLimit();
 }, 60000).unref();
 
 const scrypt = (pw, salt) =>
@@ -68,11 +108,17 @@ async function hashPassword(pw) {
 }
 
 async function checkPassword(pw, stored) {
-  const [s, k] = String(stored).split(':');
+  if (typeof stored !== 'string') return false;
+  const [s, k] = stored.split(':');
   if (!s || !k) return false;
-  const key = await scrypt(pw, Buffer.from(s, 'hex'));
-  const kb = Buffer.from(k, 'hex');
-  return kb.length === key.length && crypto.timingSafeEqual(kb, key);
+  try {
+    const salt = Buffer.from(s, 'hex');
+    const kb = Buffer.from(k, 'hex');
+    const key = await scrypt(pw, salt);
+    return kb.length === key.length && crypto.timingSafeEqual(kb, key);
+  } catch (_) {
+    return false;
+  }
 }
 
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
@@ -97,19 +143,32 @@ function parseTheme(t) {
   out.panelAlpha = num('panelAlpha', 30, 100, 100);
   out.scale = num('scale', 80, 125, 100);
   out.preset = typeof t.preset === 'string' ? t.preset.replace(/[^\p{L}\p{N} _()-]/gu, '').slice(0, 30) : '';
+  out.fontFamily = typeof t.fontFamily === 'string' ? t.fontFamily.replace(/[^\p{L}\p{N} _(),"-]/gu, '').slice(0, 80) : 'system';
   return out;
 }
 
 const CSP =
-  "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; " +
-  "script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+  "default-src 'self' capacitor: http: https: data: blob:; " +
+  "img-src 'self' data: blob: https:; " +
+  "media-src 'self' blob: data: https:; " +
+  "style-src 'self' 'unsafe-inline'; " +
+  "script-src 'self'; " +
+  "connect-src 'self' capacitor: http: https: ws: wss: blob: data:; " +
+  "font-src 'self' data:; " +
+  "worker-src 'self' blob:; " +
+  "frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
 
-function baseHeaders() {
+function baseHeaders(extra = {}) {
   return {
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'same-origin',
     'X-Frame-Options': 'DENY',
     'Content-Security-Policy': CSP,
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, Range',
+    'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
+    ...extra,
   };
 }
 
@@ -125,9 +184,14 @@ function send(res, status, body, extra = {}) {
   res.end(data);
 }
 
-function sendStatusText(res, status, msg) {
+function sendStatusText(res, status, msg, extra = {}) {
   const data = Buffer.from(msg);
-  res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Length': data.length, ...baseHeaders() });
+  res.writeHead(status, {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'Content-Length': data.length,
+    ...baseHeaders(),
+    ...extra,
+  });
   res.end(data);
 }
 
@@ -155,6 +219,17 @@ function readBody(req, limit) {
   });
 }
 
+function sanitizeObject(obj) {
+  if (obj === null || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(sanitizeObject);
+  const clean = {};
+  for (const k of Object.keys(obj)) {
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+    clean[k] = sanitizeObject(obj[k]);
+  }
+  return clean;
+}
+
 async function readJson(req, limit = 200 * 1024) {
   const buf = await readBody(req, limit);
   if (!buf.length) return {};
@@ -165,7 +240,7 @@ async function readJson(req, limit = 200 * 1024) {
     throw bad('Неверный формат данных (JSON)');
   }
   if (v === null || typeof v !== 'object' || Array.isArray(v)) throw bad('Неверный формат данных');
-  return v;
+  return sanitizeObject(v);
 }
 
 const MIME = {
@@ -184,6 +259,15 @@ const MIME = {
   '.mp4': 'video/mp4',
   '.webm': 'video/webm',
   '.mov': 'video/quicktime',
+  '.mp3': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.ogg': 'audio/ogg',
+  '.wav': 'audio/wav',
+  '.flac': 'audio/flac',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.map': 'application/json; charset=utf-8',
   '.txt': 'text/plain; charset=utf-8',
 };
 
