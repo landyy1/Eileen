@@ -42,6 +42,8 @@ function registerUserRoutes(postViewFn) {
     const u = ctx.user;
     if (b.name !== undefined) u.name = text(b.name, { min: 1, max: 40, label: 'Имя' });
     if (b.bio !== undefined) u.bio = text(b.bio, { max: 200, label: 'О себе', multi: true });
+    if (b.statusEmoji !== undefined) u.statusEmoji = text(b.statusEmoji, { max: 8, label: 'Смайл статуса' });
+    if (b.statusText !== undefined) u.statusText = text(b.statusText, { max: 60, label: 'Текст статуса' });
     if (b.color !== undefined) {
       if (typeof b.color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(b.color)) throw bad('Неверный цвет');
       u.color = b.color.toLowerCase();

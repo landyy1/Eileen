@@ -11,6 +11,7 @@ const { bad, HttpError, rateLimit, send } = require('../utils');
 
 const MAX_IMAGE = 8 * 1024 * 1024;
 const MAX_VIDEO = 80 * 1024 * 1024;
+const MAX_AUDIO = 30 * 1024 * 1024;
 
 const UPLOAD_TYPES = {
   'image/jpeg': { ext: 'jpg', kind: 'image' },
@@ -20,6 +21,12 @@ const UPLOAD_TYPES = {
   'video/mp4': { ext: 'mp4', kind: 'video' },
   'video/webm': { ext: 'webm', kind: 'video' },
   'video/quicktime': { ext: 'mov', kind: 'video' },
+  'audio/mpeg': { ext: 'mp3', kind: 'audio' },
+  'audio/mp3': { ext: 'mp3', kind: 'audio' },
+  'audio/wav': { ext: 'wav', kind: 'audio' },
+  'audio/ogg': { ext: 'ogg', kind: 'audio' },
+  'audio/m4a': { ext: 'm4a', kind: 'audio' },
+  'audio/aac': { ext: 'aac', kind: 'audio' },
 };
 
 function checkMagic(file, ext) {
@@ -31,7 +38,7 @@ function checkMagic(file, ext) {
   } finally {
     fs.closeSync(fd);
   }
-  if (n < 12) return false;
+  if (n < 4) return false;
   switch (ext) {
     case 'jpg':
       return b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
@@ -43,11 +50,20 @@ function checkMagic(file, ext) {
       return b.subarray(0, 4).toString('latin1') === 'RIFF' && b.subarray(8, 12).toString('latin1') === 'WEBP';
     case 'mp4':
     case 'mov':
+    case 'm4a':
       return b.subarray(4, 8).toString('latin1') === 'ftyp' || ['moov', 'mdat', 'free', 'wide', 'skip', 'pnot'].includes(b.subarray(4, 8).toString('latin1'));
     case 'webm':
       return b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3;
+    case 'mp3':
+      return (b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) || (b[0] === 0xff && (b[1] & 0xe0) === 0xe0);
+    case 'wav':
+      return b.subarray(0, 4).toString('latin1') === 'RIFF' && b.subarray(8, 12).toString('latin1') === 'WAVE';
+    case 'ogg':
+      return b.subarray(0, 4).toString('latin1') === 'OggS';
+    case 'aac':
+      return b[0] === 0xff && (b[1] & 0xf0) === 0xf0;
     default:
-      return false;
+      return true;
   }
 }
 
@@ -56,8 +72,8 @@ function registerUploadRoutes() {
     rateLimit('upload:' + ctx.user.id, 60, 3600 * 1000);
     const type = String(ctx.req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
     const info = UPLOAD_TYPES[type];
-    if (!info) throw bad('Неподдерживаемый формат файла. Разрешены: jpg, png, webp, gif, mp4, webm, mov');
-    const limit = info.kind === 'video' ? MAX_VIDEO : MAX_IMAGE;
+    if (!info) throw bad('Неподдерживаемый формат файла. Разрешены: картинки, видео и аудио (mp3, wav, ogg, m4a)');
+    const limit = info.kind === 'video' ? MAX_VIDEO : info.kind === 'audio' ? MAX_AUDIO : MAX_IMAGE;
     const declared = Number(ctx.req.headers['content-length'] || 0);
     if (declared > limit) throw new HttpError(413, `Файл слишком большой (максимум ${limit / 1024 / 1024} МБ)`);
 

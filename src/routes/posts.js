@@ -7,13 +7,40 @@ const { db, saveDb, nextId, UPLOAD_DIR } = require('../db');
 const { checkUploadUrl, userById, areFriends } = require('./users');
 const { publicUser, notify, notifView } = require('../realtime');
 const { bad, HttpError, rateLimit, text, intParam, readJson } = require('../utils');
+const { addXp } = require('./level');
 
 const BG_COUNT = 8;
 const UPLOAD_URL_RE = /^\/uploads\/([a-f0-9]{24})\.(jpg|png|webp|gif|mp4|webm|mov)$/;
+const ALLOWED_EMOJIS = ['❤️', '🔥', '😂', '😮', '😢', '👏'];
+
+function pollView(poll, meId) {
+  if (!poll || !Array.isArray(poll.options)) return null;
+  const votes = poll.votes || {};
+  const totalVotes = Object.keys(votes).length;
+  const optionCounts = poll.options.map(() => 0);
+  for (const uid in votes) {
+    const idx = votes[uid];
+    if (optionCounts[idx] !== undefined) optionCounts[idx]++;
+  }
+  const myVote = votes[meId] !== undefined ? votes[meId] : null;
+
+  return {
+    question: poll.question || '',
+    options: poll.options.map((opt, i) => ({
+      text: opt,
+      votes: optionCounts[i],
+      percent: totalVotes > 0 ? Math.round((optionCounts[i] / totalVotes) * 100) : 0,
+    })),
+    totalVotes,
+    myVote,
+  };
+}
 
 function postView(p, meId) {
   const author = userById(p.userId);
   if (!author) return null;
+  p.views = p.views || 0;
+  p.reactions = p.reactions || {};
   return {
     id: p.id,
     user: publicUser(author),
@@ -26,6 +53,10 @@ function postView(p, meId) {
     liked: p.likes.includes(meId),
     comments: p.comments.length,
     saved: !!((userById(meId) || {}).bookmarks || []).includes(p.id),
+    views: p.views,
+    reactions: p.reactions,
+    myReaction: p.reactions[meId] || null,
+    poll: pollView(p.poll, meId),
   };
 }
 
@@ -52,7 +83,12 @@ function registerPostRoutes() {
     limit = Math.min(limit, 10);
     const n = Math.min(limit, total);
     const items = [];
-    for (let i = 0; i < n; i++) items.push(postView(all[(cursor + i) % total], ctx.user.id));
+    for (let i = 0; i < n; i++) {
+      const p = all[(cursor + i) % total];
+      p.views = (p.views || 0) + 1;
+      items.push(postView(p, ctx.user.id));
+    }
+    saveDb();
     return { items, next: (cursor + n) % total, total };
   });
 
@@ -62,23 +98,70 @@ function registerPostRoutes() {
     const kind = b.kind;
     if (!['video', 'image', 'text'].includes(kind)) throw bad('Неверный тип поста');
     const caption = text(b.caption, { min: kind === 'text' ? 1 : 0, max: 300, label: 'Подпись', multi: true });
-    const p = { id: nextId(), userId: ctx.user.id, kind, caption, mediaUrl: '', bg: 0, createdAt: Date.now(), likes: [], comments: [] };
+    const p = { id: nextId(), userId: ctx.user.id, kind, caption, mediaUrl: '', bg: 0, createdAt: Date.now(), likes: [], comments: [], views: 0, reactions: {} };
     if (kind === 'text') {
       const bg = Number(b.bg || 0);
       p.bg = Number.isInteger(bg) && bg >= 0 && bg < BG_COUNT ? bg : 0;
     } else {
       p.mediaUrl = checkUploadUrl(String(b.mediaUrl || ''), [kind]);
     }
+
+    // Поддержка встроенных опросов
+    if (b.poll && typeof b.poll === 'object') {
+      const question = text(b.poll.question, { min: 1, max: 120, label: 'Вопрос опроса' });
+      if (!Array.isArray(b.poll.options) || b.poll.options.length < 2 || b.poll.options.length > 6) {
+        throw bad('Опрос должен содержать от 2 до 6 вариантов ответа');
+      }
+      const options = b.poll.options.map((opt, i) => text(opt, { min: 1, max: 60, label: `Вариант ${i + 1}` }));
+      p.poll = { question, options, votes: {} };
+    }
+
     db.posts.push(p);
     saveDb();
+    addXp(ctx.user.id, 15);
     return { post: postView(p, ctx.user.id) };
+  });
+
+  route('POST', '/api/posts/:id/vote', {}, async (ctx) => {
+    const p = findPost(intParam(ctx.params.id));
+    if (!p.poll) throw bad('В этом посте нет опроса');
+    const b = await readJson(ctx.req);
+    const optionIndex = Number(b.optionIndex);
+    if (!Number.isInteger(optionIndex) || optionIndex < 0 || optionIndex >= p.poll.options.length) {
+      throw bad('Неверный вариант ответа');
+    }
+    p.poll.votes = p.poll.votes || {};
+    p.poll.votes[ctx.user.id] = optionIndex;
+    saveDb();
+    addXp(ctx.user.id, 5);
+    return { poll: pollView(p.poll, ctx.user.id) };
   });
 
   route('GET', '/api/posts/:id', {}, (ctx) => {
     const p = findPost(intParam(ctx.params.id));
+    p.views = (p.views || 0) + 1;
+    saveDb();
     const v = postView(p, ctx.user.id);
     if (!v) throw new HttpError(404, 'Пост не найден');
     return { post: v };
+  });
+
+  route('POST', '/api/posts/:id/react', {}, async (ctx) => {
+    const p = findPost(intParam(ctx.params.id));
+    const b = await readJson(ctx.req);
+    const emoji = String(b.emoji || '').trim();
+    p.reactions = p.reactions || {};
+    const cur = p.reactions[ctx.user.id];
+    if (cur === emoji || !emoji) {
+      delete p.reactions[ctx.user.id];
+    } else if (ALLOWED_EMOJIS.includes(emoji)) {
+      p.reactions[ctx.user.id] = emoji;
+      notify(p.userId, 'like', ctx.user.id, { postId: p.id });
+    } else {
+      throw bad('Неподдерживаемая реакция');
+    }
+    saveDb();
+    return { reactions: p.reactions, myReaction: p.reactions[ctx.user.id] || null };
   });
 
   route('GET', '/api/trending', {}, () => {
@@ -188,6 +271,7 @@ function registerPostRoutes() {
     p.comments.push(c);
     notify(p.userId, 'comment', ctx.user.id, { postId: p.id, text: body.slice(0, 120) });
     saveDb();
+    addXp(ctx.user.id, 5);
     return { comment: { id: c.id, user: publicUser(ctx.user), text: c.text, createdAt: c.createdAt }, count: p.comments.length };
   });
 

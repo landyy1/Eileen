@@ -4,10 +4,36 @@ const { route } = require('../router');
 const { db, saveDb, nextId } = require('../db');
 const { userById, areFriends } = require('./users');
 const { publicUser, isOnline, push } = require('../realtime');
-const { HttpError, rateLimit, text, intParam, readJson } = require('../utils');
+const { bad, HttpError, rateLimit, text, intParam, readJson } = require('../utils');
+const { addXp } = require('./level');
 
 function msgView(m) {
-  return { id: m.id, from: m.from, to: m.to, text: m.text, createdAt: m.createdAt, read: !!m.read, edited: !!m.edited };
+  let reply = null;
+  if (m.replyToId) {
+    const parent = db.messages.find((x) => x.id === m.replyToId);
+    if (parent) {
+      const sender = userById(parent.from);
+      reply = {
+        id: parent.id,
+        text: parent.text,
+        senderName: sender ? sender.name : 'Пользователь',
+      };
+    }
+  }
+
+  return {
+    id: m.id,
+    from: m.from,
+    to: m.to,
+    text: m.text,
+    createdAt: m.createdAt,
+    read: !!m.read,
+    edited: !!m.edited,
+    replyTo: reply,
+    voiceUrl: m.voiceUrl || null,
+    duration: m.duration || null,
+    pinned: !!m.pinned,
+  };
 }
 
 function registerChatRoutes() {
@@ -104,13 +130,56 @@ function registerChatRoutes() {
     const other = userById(otherId);
     if (!other || other.system) throw new HttpError(404, 'Пользователь не найден');
     if (!areFriends(me, otherId)) throw new HttpError(403, 'Писать можно только друзьям');
-    const body = text(b.text, { min: 1, max: 2000, label: 'Сообщение', multi: true });
-    const m = { id: nextId(), from: me, to: otherId, text: body, createdAt: Date.now(), read: false };
+
+    let body = '';
+    const voiceUrl = String(b.voiceUrl || '').trim();
+    if (voiceUrl) {
+      if (!voiceUrl.startsWith('/uploads/')) throw bad('Неверная ссылка на голосовое сообщение');
+      body = '🎤 Голосовое сообщение';
+    } else {
+      body = text(b.text, { min: 1, max: 2000, label: 'Сообщение', multi: true });
+    }
+
+    const replyToId = b.replyToId ? Number(b.replyToId) : null;
+    const duration = voiceUrl ? Math.max(1, Math.min(600, Number(b.duration || 0))) : null;
+
+    const m = {
+      id: nextId(),
+      from: me,
+      to: otherId,
+      text: body,
+      createdAt: Date.now(),
+      read: false,
+      replyToId,
+      voiceUrl: voiceUrl || null,
+      duration,
+    };
+
     db.messages.push(m);
     saveDb();
+    addXp(me, 2);
+
     const view = msgView(m);
     push(otherId, 'message', { message: view });
     push(me, 'message', { message: view });
+    return { message: view };
+  });
+
+  // Закрепление сообщения в чате
+  route('POST', '/api/chats/:id/pin/:mid', {}, (ctx) => {
+    const me = ctx.user.id;
+    const otherId = intParam(ctx.params.id);
+    const mid = intParam(ctx.params.mid);
+
+    const m = db.messages.find((x) => x.id === mid && ((x.from === me && x.to === otherId) || (x.from === otherId && x.to === me)));
+    if (!m) throw new HttpError(404, 'Сообщение не найдено');
+
+    m.pinned = !m.pinned;
+    saveDb();
+
+    const view = msgView(m);
+    push(otherId, 'message_pinned', { message: view });
+    push(me, 'message_pinned', { message: view });
     return { message: view };
   });
 
