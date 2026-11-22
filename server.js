@@ -28,6 +28,11 @@ const { registerPostRoutes, postView } = require('./src/routes/posts');
 const { registerUploadRoutes } = require('./src/routes/upload');
 const { registerGradeRoutes } = require('./src/routes/grades');
 const { registerStreamRoute } = require('./src/routes/stream');
+const { registerStoryRoutes } = require('./src/routes/stories');
+const { registerAdminRoutes } = require('./src/routes/admin');
+const { registerMusicRoutes } = require('./src/routes/music');
+const { registerLevelRoutes } = require('./src/routes/level');
+const { registerGiftRoutes } = require('./src/routes/gifts');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -46,9 +51,19 @@ registerPostRoutes();
 registerUploadRoutes();
 registerGradeRoutes();
 registerStreamRoute();
+registerStoryRoutes();
+registerAdminRoutes();
+registerMusicRoutes();
+registerLevelRoutes();
+registerGiftRoutes();
 
 const server = http.createServer(async (req, res) => {
   try {
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, { ...baseHeaders(), 'Access-Control-Max-Age': '86400' });
+      res.end();
+      return;
+    }
     const url = new URL(req.url, 'http://localhost');
     const p = url.pathname;
     if (p.startsWith('/api/')) {
@@ -72,9 +87,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (e instanceof HttpError) {
-      const extra = e.status === 413 ? { Connection: 'close' } : {};
+      const extra = {};
+      if (e.status === 413) extra.Connection = 'close';
+      if (e.retryAfter) extra['Retry-After'] = String(e.retryAfter);
       if (req.url && req.url.startsWith('/api/')) send(res, e.status, { error: e.message }, extra);
-      else sendStatusText(res, e.status, e.message);
+      else sendStatusText(res, e.status, e.message, extra);
     } else if (e instanceof URIError) {
       send(res, 400, { error: 'Неверный адрес' });
     } else {
