@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: eileen-server
+    env: node
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: ADMIN_SECRET
+        sync: false
+      - key: PORT
+        value: 10000
+      - key: TRUST_PROXY
+        value: "1"

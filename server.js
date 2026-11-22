@@ -33,6 +33,7 @@ const { registerAdminRoutes } = require('./src/routes/admin');
 const { registerMusicRoutes } = require('./src/routes/music');
 const { registerLevelRoutes } = require('./src/routes/level');
 const { registerGiftRoutes } = require('./src/routes/gifts');
+const { registerSocialRoutes } = require('./src/routes/social');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -56,6 +57,7 @@ registerAdminRoutes();
 registerMusicRoutes();
 registerLevelRoutes();
 registerGiftRoutes();
+registerSocialRoutes(postView);
 
 const server = http.createServer(async (req, res) => {
   try {
